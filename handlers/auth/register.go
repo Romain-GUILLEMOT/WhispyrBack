@@ -9,10 +9,12 @@ import (
 	"github.com/Romain-GUILLEMOT/WhispyrBack/models"
 	"github.com/Romain-GUILLEMOT/WhispyrBack/utils"
 	"github.com/go-playground/validator/v10"
+	"github.com/gocql/gocql"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
 	"math/rand"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -208,23 +210,26 @@ func RegisterUser(c *fiber.Ctx) error {
 
 	// Upload de l’avatar unique
 	var avatarURL string
+	avatarURL = generateDefaultAvatarURL(username)
 	file, err := c.FormFile("avatar")
+
 	if err == nil {
 		src, _ := file.Open()
 		defer src.Close()
-		converted, err := utils.ConvertToWebP(src, file.Header.Get("Content-Type"))
+		converted, err := utils.ConvertToRoundedWebP(src, file.Header.Get("Content-Type"))
 		if err != nil {
 			return fiber.NewError(fiber.StatusInternalServerError, "Erreur conversion WebP. (Code: REG-004)")
 		}
 		randStr, _ := utils.RandomString64()
 		name := randStr + ".webp"
-		_, err = utils.MinioClient.PutObject(context.Background(), "photos", name, converted, int64(converted.Len()), minio.PutObjectOptions{
+		_, err = utils.MinioClient.PutObject(context.Background(), cfg.MinioBucket, name, converted, int64(converted.Len()), minio.PutObjectOptions{
 			ContentType: "image/webp",
 		})
 		if err != nil {
+			utils.Error("Échec MinIO PutObject", "err", err, "fichier", name)
 			return fiber.NewError(fiber.StatusInternalServerError, "Erreur upload MinIO. (Code: REG-005)")
 		}
-		avatarURL = fmt.Sprintf("https://whyspir-cdn.yotapaki.dev/photos/%s", name)
+		avatarURL = fmt.Sprintf(cfg.MinioURL+"/%s", name)
 	}
 
 	// Hash du mot de passe
@@ -232,10 +237,12 @@ func RegisterUser(c *fiber.Ctx) error {
 	if err != nil {
 		return fiber.NewError(fiber.StatusInternalServerError, "Erreur de sécurité. (Code: REG-006)")
 	}
+	scyllaUUID := gocql.UUID(uuid.New())
 
 	user := models.User{
-		ID:                 uuid.New(),
+		ID:                 scyllaUUID,
 		Username:           input.Username,
+		Email:              email,
 		Password:           hashedPass,
 		Avatar:             avatarURL,
 		ChannelsAccessible: []uuid.UUID{},
@@ -245,9 +252,9 @@ func RegisterUser(c *fiber.Ctx) error {
 	// Insert dans ScyllaDB
 	if err := db.Session.Query(`
 		INSERT INTO users (
-			id, username, password, avatar, channels_accessible, created_at
-		) VALUES (?, ?, ?, ?, ?, ?)`,
-		user.ID, user.Username, user.Password, user.Avatar, user.ChannelsAccessible, user.CreatedAt,
+			id, username, email, password, avatar, channels_accessible, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		scyllaUUID, user.Username, user.Email, user.Password, user.Avatar, user.ChannelsAccessible, user.CreatedAt,
 	).Exec(); err != nil {
 		return c.Status(500).JSON(fiber.Map{
 			"message": "Erreur lors de l’insertion. (Code: REG-007)",
@@ -262,8 +269,50 @@ func RegisterUser(c *fiber.Ctx) error {
 
 	_ = utils.RedisDel(key)
 
-	return c.Status(201).JSON(fiber.Map{
-		"message": "🎉 Compte créé avec succès",
-		"user_id": user.ID,
-	})
+	ua := c.Get("User-Agent")
+	accept := c.Get("Accept")
+	lang := c.Get("Accept-Language")
+	encoding := c.Get("Accept-Encoding")
+	ip := c.IP()
+	deviceID := utils.GenerateDeviceID(ua, accept, lang, encoding, ip)
+
+	accessToken, err := utils.GenerateAccessToken(scyllaUUID.String(), deviceID)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "Erreur lors de la génération des token de connexion. (Code: REG-012)")
+	}
+	refreshToken, err := utils.GenerateRefreshToken(scyllaUUID.String(), deviceID)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "Erreur lors de la génération des token de connexion. (Code: REG-013)")
+	}
+	response := fiber.Map{
+		"message":       "🎉 Compte créé avec succès",
+		"access_token":  accessToken,
+		"refresh_token": refreshToken,
+	}
+
+	if cfg.Debug {
+		response["device_id"] = deviceID
+	}
+
+	return c.Status(201).JSON(response)
+}
+
+func generateDefaultAvatarURL(username string) string {
+	colors := []string{
+		"0D8ABC", "F44336", "4CAF50", "FF9800", "9C27B0",
+		"3F51B5", "795548", "607D8B", "009688", "E91E63",
+	}
+
+	// Choisir une couleur aléatoire
+	rand.Seed(time.Now().UnixNano())
+	color := colors[rand.Intn(len(colors))]
+
+	// Capitaliser le nom (facultatif)
+	name := strings.Title(strings.ReplaceAll(username, "_", " "))
+
+	// Encoder le nom pour l’URL
+	escapedName := url.QueryEscape(name)
+
+	// Générer l’URL finale
+	return fmt.Sprintf("https://ui-avatars.com/api/?background=%s&color=fff&name=%s", color, escapedName)
 }

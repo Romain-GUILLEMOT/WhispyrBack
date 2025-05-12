@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"github.com/Romain-GUILLEMOT/WhispyrBack/config"
 	"github.com/google/uuid"
@@ -43,16 +45,31 @@ func generateToken(userID string, device string, tokenType TokenType, ttl time.D
 		return "", fmt.Errorf("can't sign the token: %w", err)
 	}
 	if tokenType == AccessToken {
-		if err := RedisSet("access_token:"+signed, userID+device, ttl); err != nil {
-			return "", fmt.Errorf("can't save the token: %w", err)
+		err := revokeTokensByIndex(userID, device, AccessToken)
+		if err != nil {
+			return "", fmt.Errorf("can't remove old tokens: %w", err)
+		}
 
+	}
+	if tokenType == RefreshToken {
+		err := revokeTokensByIndex(userID, device, RefreshToken)
+		if err != nil {
+			return "", fmt.Errorf("can't remove old tokens: %w", err)
 		}
+
+	}
+	indexKey := "device_tokens:" + userID + ":" + device
+
+	var redisKey string
+	if tokenType == AccessToken {
+		redisKey = "access_token:" + signed
 	} else {
-		if err := RedisSet("refresh_token:"+signed, userID+device, ttl); err != nil {
-			return "", fmt.Errorf("can't save the token: %w", err)
-		}
+		redisKey = "refresh_token:" + signed
 	}
 
+	if err := RedisSet(redisKey, userID+device, ttl, indexKey); err != nil {
+		return "", fmt.Errorf("can't save the token: %w", err)
+	}
 	return signed, nil
 }
 
@@ -112,7 +129,8 @@ func RefreshAccessToken(refreshToken string) (string, string, error) {
 		return "", "", fmt.Errorf("not a refresh token")
 	}
 	accessToken, err := GenerateAccessToken(claims.UserID, claims.Device)
-	newRefreshToken := ""
+	newRefreshToken := refreshToken
+	Info("TTL du refresh token : " + ttl.String())
 	if ttl < 30*24*time.Hour {
 		err = RedisDel("refresh_token:" + refreshToken)
 		if err != nil {
@@ -145,24 +163,35 @@ func CheckUserToken(accessToken string) (*uuid.UUID, bool) {
 	}
 	return &parsedUUID, ttl < 60
 }
-func ShouldRefreshAccessToken(tokenStr string) (bool, error) {
-	cfg := config.GetConfig()
-	parsed, err := jwt.ParseWithClaims(tokenStr, &CustomClaims{}, func(token *jwt.Token) (interface{}, error) {
-		return []byte(cfg.JWTSecret), nil
-	}, jwt.WithLeeway(5*time.Second)) // marge de sécurité
 
+func GenerateDeviceID(ua string, accept string, lang string, encoding string, ip string) string {
+	rawID := fmt.Sprintf("%s|%s|%s|%s|%s", ua, accept, lang, encoding, ip)
+	hash := sha256.Sum256([]byte(rawID))
+	deviceID := hex.EncodeToString(hash[:])
+	return deviceID
+}
+
+func revokeTokensByIndex(userID, deviceID string, tokenType TokenType) error {
+	indexKey := "device_tokens:" + userID + ":" + deviceID
+	tokens, err := Redis.SMembers(Ctx, indexKey).Result()
 	if err != nil {
-		return true, nil
+		return err
 	}
 
-	claims, ok := parsed.Claims.(*CustomClaims)
-	if !ok || !parsed.Valid {
-		return false, fmt.Errorf("invalid token")
-	}
-	if claims.ExpiresAt == nil {
-		return false, fmt.Errorf("missing expiration")
+	if len(tokens) == 0 {
+		return nil
 	}
 
-	// Refresh si expire dans moins de 60s
-	return time.Until(claims.ExpiresAt.Time) < 60*time.Second, nil
+	prefix := "access_token:"
+	if tokenType == RefreshToken {
+		prefix = "refresh_token:"
+	}
+
+	pipe := Redis.TxPipeline()
+	for _, t := range tokens {
+		pipe.Del(Ctx, prefix+t)
+	}
+	pipe.Del(Ctx, indexKey)
+	_, err = pipe.Exec(Ctx)
+	return err
 }

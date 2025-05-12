@@ -33,6 +33,7 @@ func RequireAuth() fiber.Handler {
 		}
 
 		c.Locals("user_id", userID)
+
 		return c.Next()
 	}
 }

@@ -44,6 +44,7 @@ func (m FirstMigration) Up(session *gocql.Session) error {
 			content TEXT,
 			PRIMARY KEY (channel_id, sent_at)
 		);`,
+		`CREATE INDEX IF NOT EXISTS email_idx ON users (email)`,
 	}
 
 	for _, query := range cql {

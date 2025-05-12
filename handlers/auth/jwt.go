@@ -7,32 +7,31 @@ import (
 )
 
 func RefreshAccessToken(c *fiber.Ctx) error {
-	accessHeader := c.Get("Authorization")
-	refreshHeader := c.Get("X-Refresh-Token")
+	refreshHeader := c.Get("Authorization")
 
-	if !strings.HasPrefix(accessHeader, "Bearer ") || !strings.HasPrefix(refreshHeader, "Bearer ") {
-		return c.Status(401).JSON(fiber.Map{"message": "Vous n'êtes pas authentifié !"})
+	if !strings.HasPrefix(refreshHeader, "Bearer ") {
+		return c.Status(401).JSON(fiber.Map{"message": "Token non fourni ou invalide."})
 	}
-	access := strings.TrimPrefix(accessHeader, "Bearer ")
+
 	refresh := strings.TrimPrefix(refreshHeader, "Bearer ")
+	if refresh == "" {
+		return c.Status(401).JSON(fiber.Map{"message": "Token vide."})
+	}
 
-	if access == "" {
-		return c.Status(401).JSON(fiber.Map{"message": "Vous n'êtes pas authentifié !"})
-	}
-	isRefresh, err := utils.ShouldRefreshAccessToken(access)
+	accessToken, newRefreshToken, err := utils.RefreshAccessToken(refresh)
 	if err != nil {
-		return c.Status(401).JSON(fiber.Map{"message": "Vous n'êtes pas authentifié !"})
+		return c.Status(401).JSON(fiber.Map{"message": "Token invalide ou expiré."})
 	}
-	if !isRefresh {
-		return c.Status(401).JSON(fiber.Map{"message": "Votre token est déja valide !"})
-	}
-	accessToken, refreshToken, err := utils.RefreshAccessToken(refresh)
-	if err != nil {
-		return c.Status(401).JSON(fiber.Map{"message": "Vous n'êtes pas authentifié !"})
-	}
-	if accessToken == "" {
-		return c.Status(401).JSON(fiber.Map{"message": "Vous n'êtes pas authentifié !"})
-	}
-	return c.Status(200).JSON(fiber.Map{"message": "Votre token a été rafraichi !", "data": fiber.Map{"access_token": accessToken, "refresh_token": refreshToken}})
 
+	resp := fiber.Map{
+		"access_token": accessToken,
+	}
+	if newRefreshToken != "" {
+		resp["refresh_token"] = newRefreshToken
+	}
+
+	return c.Status(200).JSON(fiber.Map{
+		"message": "✅ Nouveau token généré",
+		"data":    resp,
+	})
 }

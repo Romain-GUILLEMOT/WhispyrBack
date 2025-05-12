@@ -3,24 +3,26 @@ package dbTools
 import (
 	"github.com/Romain-GUILLEMOT/WhispyrBack/db"
 	"github.com/Romain-GUILLEMOT/WhispyrBack/models"
+	"github.com/gocql/gocql"
 	"github.com/google/uuid"
 )
 
 func GetUserByID(id *uuid.UUID) (*models.User, error) {
 	var user models.User
 
+	// Convertir uuid.UUID → gocql.UUID
+	gocqlID := gocql.UUID(*id)
+
 	query := `
-		SELECT id, username, password, avatar, channels_accessible, created_at
+		SELECT username, email, avatar, channels_accessible
 		FROM users WHERE id = ? LIMIT 1
 	`
 
-	if err := db.Session.Query(query, id).Scan(
-		&user.ID,
+	if err := db.Session.Query(query, gocqlID).Scan(
 		&user.Username,
-		&user.Password,
+		&user.Email,
 		&user.Avatar,
 		&user.ChannelsAccessible,
-		&user.CreatedAt,
 	); err != nil {
 		return nil, err
 	}

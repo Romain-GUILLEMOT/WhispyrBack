@@ -25,7 +25,8 @@ func Me(c *fiber.Ctx) error {
 	}
 	data, err := dbTools.GetUserByID(userId)
 	if err != nil {
-		return c.Status(401).JSON(fiber.Map{"message": "Impossible de récupérer vos données utilisateur !"})
+		utils.Error(err.Error())
+		return c.Status(500).JSON(fiber.Map{"message": "Impossible de récupérer vos données utilisateur !"})
 	}
 	userData := fiber.Map{
 		"email":    data.Email,

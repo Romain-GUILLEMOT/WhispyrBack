@@ -1,13 +1,14 @@
 package models
 
 import (
+	"github.com/gocql/gocql"
 	"time"
 
 	"github.com/google/uuid"
 )
 
 type User struct {
-	ID                 uuid.UUID   `json:"id" validate:"required,uuid4"`
+	ID                 gocql.UUID  `json:"id" validate:"required,uuid4"`
 	Email              string      `json:"email" validate:"required,email"`
 	Username           string      `json:"username" validate:"required,min=3,max=32"`
 	Password           string      `json:"-" validate:"required,min=8"`
