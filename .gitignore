@@ -1,0 +1,43 @@
+# Binaries
+/chat-app
+*.exe
+*.out
+*.test
+
+# Build output
+build/
+bin/
+dist/
+
+# IDEs & Editors
+.idea/
+.vscode/
+*.sw?
+*.swo
+*.swn
+
+# Logs
+*.log
+
+# Dependency directories
+vendor/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env files
+.env
+.env.*
+
+# Uploads or temp files
+*.tmp
+*.bak
+*.old
+
+# Coverage
+coverage.out
+cover.html
+
+# MinIO or other external tools
+.minioclient/
