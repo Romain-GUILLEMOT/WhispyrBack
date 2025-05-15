@@ -5,6 +5,7 @@ import (
 	"github.com/Romain-GUILLEMOT/WhispyrBack/config"
 	"github.com/Romain-GUILLEMOT/WhispyrBack/db"
 	"github.com/Romain-GUILLEMOT/WhispyrBack/utils"
+	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"log"
 	"os"
@@ -25,6 +26,12 @@ func main() {
 	if debug == "true" {
 		log.Println("Running in debug mode")
 		app.Use(logger.New())
+		app.Use(cors.New(cors.Config{
+			AllowOrigins:     "https://whispyr.romain-guillemot.dev",
+			AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
+			AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS",
+			AllowCredentials: true,
+		}))
 	}
 	utils.InitLogger()
 

@@ -100,6 +100,7 @@ func RegisterAskCode(c *fiber.Ctx) error {
 		utils.SendErrorMail("143", "register.go", "Cannot send email", err.Error())
 		return c.Status(500).JSON(fiber.Map{"message": "Erreur interne. (Code: WHIAUTH-006)"})
 	}
+	utils.Info(code)
 	return c.Status(200).JSON(fiber.Map{
 		"message": "Va checker tes mails 📧, ton code t’y attend !",
 	})
