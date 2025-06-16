@@ -27,7 +27,6 @@ pipeline {
 
         stage('Build') {
             steps {
-                sh 'go run -mod=mod entgo.io/ent/cmd/ent generate ./ent/schema'
             sh 'go mod tidy'
             sh 'go build -o whispyrBack .'
 
