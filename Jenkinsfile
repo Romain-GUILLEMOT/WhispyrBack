@@ -71,10 +71,10 @@ pipeline {
                       -H "Authorization:Bearer $TOKEN" \\
                       -H "Accept: application/vnd.github+json" \
                       -d '{
-                        "tag_name": "'$TAG'",
+                        "tag_name": "'"$TAG"'",
                         "target_commitish": "main",
-                        "name": "'$TAG'",
-                        "body": "'$TAG_MSG'",
+                        "name": "'"$TAG"'",
+                        "body": "'"$TAG_MSG"'",
                         "draft": false,
                         "prerelease": false
                       }
