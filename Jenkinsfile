@@ -74,7 +74,7 @@ pipeline {
                         "tag_name": "'$TAG'",
                         "target_commitish": "main",
                         "name": "'$TAG'",
-                        "body": "'TAG_MSG'",
+                        "body": "'$TAG_MSG'",
                         "draft": false,
                         "prerelease": false
                       }
