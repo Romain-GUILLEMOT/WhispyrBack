@@ -8,7 +8,7 @@ pipeline {
         go '1.24.4'
       }
       stages {
-        stage('Checkout') {
+        stage('Checkout ') {
             steps {
                 checkout scm
           }
