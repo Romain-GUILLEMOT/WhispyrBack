@@ -26,19 +26,18 @@ pipeline {
         }
 
         stage('Docker Build & Push') {
-          steps {
-            script {
-              def imageName = "ghcr.io/romain-guillemot/whispyrback:v1.${BUILD_NUMBER}"
-              withCredentials([string(credentialsId: 'GH', variable: 'TOKEN')]) {
-                sh '''
-                  echo $TOKEN | docker login ghcr.io -u git --password-stdin
-                  docker build -t $imageName .
-                  docker push $imageName
-                '''
-              }
+            steps {
+                script {
+                    def image = docker.build("ghcr.io/romain-guillemot/whispyrback")
+        
+                    docker.withRegistry('https://ghcr.io', 'GHCR_CREDENTIALS_ID') {
+                        image.push("v1.${env.BUILD_NUMBER}")
+                        image.push("latest")
+                    }
+                }
             }
-          }
         }
+
           
         stage('Tag Git Commit') {
             steps {
