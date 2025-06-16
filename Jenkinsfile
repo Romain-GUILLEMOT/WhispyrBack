@@ -30,11 +30,11 @@ pipeline {
             script {
               def imageName = "ghcr.io/romain-guillemot/whispyrback:v1.${BUILD_NUMBER}"
               withCredentials([string(credentialsId: 'GH', variable: 'TOKEN')]) {
-                sh """
+                sh '''
                   echo $TOKEN | docker login ghcr.io -u git --password-stdin
                   docker build -t $imageName .
                   docker push $imageName
-                """
+                '''
               }
             }
           }
