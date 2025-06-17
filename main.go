@@ -38,7 +38,7 @@ func main() {
 	utils.InitLogger()
 
 	config.LoadConfig()
-	if(noBoot === "true") {
+	if noBoot == "true" {
 		db.ConnectDB()
 		db.ApplyMigrations(db.Session)
 		utils.MinioInit()
