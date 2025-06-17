@@ -19,6 +19,8 @@ func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Fatal(".env introuvable.")
 	}
+	noBoot := os.Getenv("noBoot")
+
 	app := fiber.New(fiber.Config{
 		BodyLimit: 10 * 1024 * 1024, // 10 MB
 	})
@@ -36,12 +38,16 @@ func main() {
 	utils.InitLogger()
 
 	config.LoadConfig()
-	db.ConnectDB()
-	db.ApplyMigrations(db.Session)
-	utils.MinioInit()
-	utils.InitRedis()
-	utils.InitMailer()
-	api.SetupRoutes(app)
+	if(noBoot === "true") {
+		db.ConnectDB()
+		db.ApplyMigrations(db.Session)
+		utils.MinioInit()
+		utils.InitRedis()
+		utils.InitMailer()
+		api.SetupRoutes(app)
+	}
+	
+
 
 	port := os.Getenv("PORT")
 	if port == "" {
