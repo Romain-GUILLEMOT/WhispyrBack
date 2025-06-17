@@ -17,7 +17,7 @@ import (
 func main() {
 	defer utils.HandlePanic()
 	if err := godotenv.Load(); err != nil {
-		log.Fatal(".env introuvable.")
+             log.Println("Avertissement : Fichier .env non trouvé. L'application se basera sur les variables d'environnement système.")
 	}
 	noBoot := os.Getenv("noBoot")
 
