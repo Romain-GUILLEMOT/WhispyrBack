@@ -34,18 +34,20 @@ func main() {
 			AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS",
 			AllowCredentials: true,
 		}))
-	}
+	} 
 	utils.InitLogger()
 
 	config.LoadConfig()
-	if noBoot == "true" {
+	if noBoot != "true" {
 		db.ConnectDB()
 		db.ApplyMigrations(db.Session)
 		utils.MinioInit()
 		utils.InitRedis()
 		utils.InitMailer()
 		api.SetupRoutes(app)
-	}
+	} else {
+          log.Println("Mode noBoot activé : Initialisation des services (DB, Minio, Redis...) sautée.")
+        }
 	
 
 
