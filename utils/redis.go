@@ -66,6 +66,31 @@ func RedisTTL(key string) (time.Duration, error) {
 	return ttl, nil
 }
 
+// Nouvelle fonction: RedisSAdd ajoute des membres à un ensemble (set) Redis.
+func RedisSAdd(ctx context.Context, key string, members ...interface{}) error {
+	return Redis.SAdd(ctx, key, members...).Err()
+}
+
+// Nouvelle fonction: RedisSRem retire des membres d'un ensemble (set) Redis.
+func RedisSRem(ctx context.Context, key string, members ...interface{}) error {
+	return Redis.SRem(ctx, key, members...).Err()
+}
+
+// Nouvelle fonction: RedisPublish publie un message sur un canal Redis Pub/Sub.
+func RedisPublish(ctx context.Context, channel string, message interface{}) error {
+	return Redis.Publish(ctx, channel, message).Err()
+}
+
+// Nouvelle fonction: RedisPSubscribe s'abonne à un ou plusieurs canaux Redis Pub/Sub.
+func RedisPSubscribe(ctx context.Context, channels ...string) *redis.PubSub {
+	return Redis.PSubscribe(ctx, channels...)
+}
+
+// Nouvelle fonction: RedisSetWithTTL définit une clé avec une durée de vie.
+func RedisSetWithTTL(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
+	return Redis.Set(ctx, key, value, ttl).Err()
+}
+
 func extractTokenFromKey(fullKey string) string {
 	parts := strings.SplitN(fullKey, ":", 2)
 	if len(parts) == 2 {

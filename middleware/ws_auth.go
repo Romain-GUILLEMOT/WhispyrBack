@@ -23,7 +23,6 @@ func WebSocketAuth() fiber.Handler {
 				"message": "Token invalide ou expiré.",
 			})
 		}
-
 		c.Locals("user_id", userID)
 
 		// Upgrade WebSocket si tout est OK

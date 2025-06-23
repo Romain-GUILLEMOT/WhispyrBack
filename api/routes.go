@@ -19,10 +19,9 @@ func SetupRoutes(app *fiber.App) {
 	AuthRoutes(auth)
 	servers := router.Group("/servers", middlewares.RequireAuth())
 	ServerRoutes(servers)
-	app.Use("/ws", middlewares.WebSocketAuth(), handlers.WebSocketHandler)
-	app.Get("/ws", middlewares.WebSocketAuth(), websocket.New(handlers.HandleWebSocket))
+	router.Use("/ws", middlewares.WebSocketAuth(), handlers.WebSocketHandler)
+	router.Get("/ws", middlewares.WebSocketAuth(), websocket.New(handlers.HandleWebSocket))
 
-	handlers.StartBroadcaster()
 }
 
 func AuthRoutes(router fiber.Router) {

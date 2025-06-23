@@ -4,6 +4,7 @@ import (
 	"github.com/Romain-GUILLEMOT/WhispyrBack/api"
 	"github.com/Romain-GUILLEMOT/WhispyrBack/config"
 	"github.com/Romain-GUILLEMOT/WhispyrBack/db"
+	"github.com/Romain-GUILLEMOT/WhispyrBack/handlers"
 	"github.com/Romain-GUILLEMOT/WhispyrBack/utils"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
@@ -41,6 +42,8 @@ func main() {
 	utils.MinioInit()
 	utils.InitRedis()
 	utils.InitMailer()
+	handlers.StartBroadcaster()
+
 	api.SetupRoutes(app)
 
 	port := os.Getenv("PORT")
