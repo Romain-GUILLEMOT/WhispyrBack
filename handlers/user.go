@@ -25,10 +25,10 @@ func Me(c *fiber.Ctx) error {
 	}
 	data, err := dbTools.GetUserByID(userId)
 	if err != nil {
-		utils.Error(err.Error())
 		return c.Status(500).JSON(fiber.Map{"message": "Impossible de récupérer vos données utilisateur !"})
 	}
 	userData := fiber.Map{
+		"id":       userId,
 		"email":    data.Email,
 		"username": data.Username,
 		"avatar":   data.Avatar,
@@ -36,6 +36,7 @@ func Me(c *fiber.Ctx) error {
 
 	return c.Status(200).JSON(fiber.Map{
 		"message": "Utilisateur authentifié !",
+		"status":  "success",
 		"data":    userData,
 	})
 

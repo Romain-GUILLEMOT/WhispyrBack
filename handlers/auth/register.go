@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"github.com/Romain-GUILLEMOT/WhispyrBack/config"
@@ -15,6 +16,7 @@ import (
 	"github.com/minio/minio-go/v7"
 	"math/rand"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -55,13 +57,23 @@ func RegisterAskCode(c *fiber.Ctx) error {
 	}
 	cfg := config.GetConfig()
 
-	var existing string
-	err = db.Session.Query(`SELECT email FROM users WHERE email = ? LIMIT 1`, email).Scan(&existing)
+	var existingID gocql.UUID
+	err = db.Session.Query(`SELECT id FROM users_by_email WHERE email = ? LIMIT 1`, email).Scan(&existingID)
 	if err == nil {
-		return c.Status(400).JSON(fiber.Map{
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"message": "Un compte avec cet email existe déjà. (Code: WHIAUTH-004)",
 		})
 	}
+
+	// Cas 2 : L'erreur est AUTRE CHOSE que "non trouvé". C'est une vraie erreur système.
+	if err != gocql.ErrNotFound {
+		utils.Error("ScyllaDB query failed when checking for email", "err", err, "email", email)
+		// On ne laisse SURTOUT PAS passer une inscription si la DB est en erreur.
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"message": "Erreur interne du service. (Code: WHIAUTH-030)",
+		})
+	}
+	utils.Info(err.Error())
 
 	code := fmt.Sprintf("%04d", rand.Intn(10000))
 	key := "email_verif:" + email
@@ -69,7 +81,12 @@ func RegisterAskCode(c *fiber.Ctx) error {
 	if cfg.Debug {
 		utils.Info("TTL", "ttl", ttl)
 		if cfg.Debug {
-			utils.RedisDel(key)
+			err := utils.RedisDel(key)
+			if err != nil {
+				return c.Status(500).JSON(fiber.Map{
+					"message": err.Error(),
+				})
+			}
 		}
 	}
 	if err != nil {
@@ -185,13 +202,16 @@ func RegisterUser(c *fiber.Ctx) error {
 		Password: password,
 		Code:     code,
 	}
+	cfg := config.GetConfig()
 
 	if err := validate.Struct(input); err != nil {
+		if cfg.Debug {
+			utils.Error(err.Error())
+		}
 		return fiber.NewError(fiber.StatusBadRequest, "Champs invalides. (Code: WHIREG-001)")
 	}
 
 	key := "acc_reg:" + email
-	cfg := config.GetConfig()
 	if !cfg.Debug {
 		storedCode, err := utils.RedisGet(key)
 		if err != nil || storedCode != code {
@@ -217,9 +237,25 @@ func RegisterUser(c *fiber.Ctx) error {
 	if err == nil {
 		src, _ := file.Open()
 		defer src.Close()
-		converted, err := utils.ConvertToRoundedWebP(src, file.Header.Get("Content-Type"))
-		if err != nil {
-			return fiber.NewError(fiber.StatusInternalServerError, "Erreur conversion WebP. (Code: REG-004)")
+		ext := strings.ToLower(filepath.Ext(file.Filename)) // ex: ".gif"
+		var converted *bytes.Buffer = nil
+		if ext == ".gif" {
+			converted, err = utils.ConvertToRoundedGIF(src)
+			if err != nil {
+				if cfg.Debug {
+					utils.Error(err.Error())
+				}
+				return fiber.NewError(fiber.StatusInternalServerError, "Erreur conversion AVIF. (Code: REG-004)")
+			}
+		} else {
+			converted, err = utils.ConvertToRoundedWebP(src, file.Header.Get("Content-Type"))
+			if err != nil {
+				if cfg.Debug {
+					utils.Error(err.Error())
+				}
+
+				return fiber.NewError(fiber.StatusInternalServerError, "Erreur conversion WebP. (Code: REG-004)")
+			}
 		}
 		randStr, _ := utils.RandomString64()
 		name := randStr + ".webp"
@@ -241,31 +277,64 @@ func RegisterUser(c *fiber.Ctx) error {
 	scyllaUUID := gocql.UUID(uuid.New())
 
 	user := models.User{
-		ID:                 scyllaUUID,
-		Username:           input.Username,
-		Email:              email,
-		Password:           hashedPass,
-		Avatar:             avatarURL,
-		ChannelsAccessible: []uuid.UUID{},
-		CreatedAt:          time.Now(),
+		ID:        scyllaUUID,
+		Username:  input.Username,
+		Email:     email,
+		Password:  hashedPass,
+		Avatar:    avatarURL,
+		CreatedAt: time.Now(),
 	}
 
 	// Insert dans ScyllaDB
-	if err := db.Session.Query(`
-		INSERT INTO users (
-			id, username, email, password, avatar, channels_accessible, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		scyllaUUID, user.Username, user.Email, user.Password, user.Avatar, user.ChannelsAccessible, user.CreatedAt,
-	).Exec(); err != nil {
-		return c.Status(500).JSON(fiber.Map{
-			"message": "Erreur lors de l’insertion. (Code: REG-007)",
-			"error": func() string {
-				if cfg.Debug {
-					return err.Error()
-				}
-				return "Unknown"
-			}(),
-		})
+	// --- ÉTAPE 1: Tenter de réserver l'email ---
+	// L'ordre des variables DOIT correspondre à l'ordre des colonnes de la table.
+	// Ordre pour `users_by_email`: email, avatar, id, username
+	var conflictEmail, conflictAvatar, conflictUsername string
+	var conflictID gocql.UUID
+
+	applied, err := db.Session.Query(
+		`INSERT INTO users_by_email (email, id, username, avatar) VALUES (?, ?, ?, ?) IF NOT EXISTS`,
+		user.Email, user.ID, user.Username, user.Avatar,
+	).WithContext(context.Background()).ScanCAS(&conflictEmail, &conflictAvatar, &conflictID, &conflictUsername)
+
+	if err != nil {
+		utils.Error("ScyllaDB LWT failed for users_by_email", "err", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Erreur base de données. (Code: REG-010)"})
+	}
+	if !applied {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"message": "Cet email est déjà utilisé. (Code: REG-003)"})
+	}
+
+	// --- ÉTAPE 2: Tenter de réserver le username ---
+	// La table `users_by_username` a 3 colonnes. Assumons l'ordre : username, avatar, id
+	var conflictUsername2, conflictAvatar2 string
+	var conflictID2 gocql.UUID
+
+	applied, err = db.Session.Query(
+		`INSERT INTO users_by_username (username, id, avatar) VALUES (?, ?, ?) IF NOT EXISTS`,
+		user.Username, user.ID, user.Avatar,
+	).WithContext(context.Background()).ScanCAS(&conflictUsername2, &conflictAvatar2, &conflictID2)
+
+	if err != nil {
+		utils.Error("ScyllaDB LWT failed for users_by_username", "err", err)
+		_ = db.Session.Query(`DELETE FROM users_by_email WHERE email = ?`, user.Email).Exec() // COMPENSATION
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Erreur base de données. (Code: REG-011)"})
+	}
+	if !applied {
+		_ = db.Session.Query(`DELETE FROM users_by_email WHERE email = ?`, user.Email).Exec() // COMPENSATION
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"message": "Ce nom d'utilisateur est déjà utilisé. (Code: REG-008)"})
+	}
+
+	// --- ÉTAPE 3: Insérer l'utilisateur final ---
+	if err := db.Session.Query(
+		`INSERT INTO users (id, email, username, password, avatar, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		user.ID, user.Email, user.Username, user.Password, user.Avatar, user.CreatedAt,
+	).WithContext(context.Background()).Exec(); err != nil {
+		utils.Error("ScyllaDB final user insert failed", "err", err)
+		// COMPENSATION
+		_ = db.Session.Query(`DELETE FROM users_by_email WHERE email = ?`, user.Email).Exec()
+		_ = db.Session.Query(`DELETE FROM users_by_username WHERE username = ?`, user.Username).Exec()
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Erreur finale de création de compte. (Code: REG-012)"})
 	}
 
 	_ = utils.RedisDel(key)

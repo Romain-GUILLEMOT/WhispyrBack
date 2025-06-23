@@ -14,7 +14,7 @@ func GetUserByID(id *uuid.UUID) (*models.User, error) {
 	gocqlID := gocql.UUID(*id)
 
 	query := `
-		SELECT username, email, avatar, channels_accessible
+		SELECT username, email, avatar
 		FROM users WHERE id = ? LIMIT 1
 	`
 
@@ -22,7 +22,6 @@ func GetUserByID(id *uuid.UUID) (*models.User, error) {
 		&user.Username,
 		&user.Email,
 		&user.Avatar,
-		&user.ChannelsAccessible,
 	); err != nil {
 		return nil, err
 	}

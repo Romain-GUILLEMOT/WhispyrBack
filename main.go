@@ -26,13 +26,13 @@ func main() {
 	if debug == "true" {
 		log.Println("Running in debug mode")
 		app.Use(logger.New())
-		app.Use(cors.New(cors.Config{
-			AllowOrigins:     "https://whispyr.romain-guillemot.dev",
-			AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
-			AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS",
-			AllowCredentials: true,
-		}))
+
 	}
+	app.Use(cors.New(cors.Config{
+		AllowOrigins:     "https://whispyr.romain-guillemot.dev",
+		AllowHeaders:     "Origin,Content-Type,Accept,Authorization,X-Requested-With", // Add X-Requested-With here		AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS",
+		AllowCredentials: true,
+	}))
 	utils.InitLogger()
 
 	config.LoadConfig()
