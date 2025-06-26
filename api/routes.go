@@ -19,6 +19,8 @@ func SetupRoutes(app *fiber.App) {
 	AuthRoutes(auth)
 	servers := router.Group("/servers", middlewares.RequireAuth())
 	ServerRoutes(servers)
+	channels := router.Group("/channels", middlewares.RequireAuth())
+	ChannelRoutes(channels)
 	router.Use("/ws", middlewares.WebSocketAuth(), handlers.WebSocketHandler)
 	router.Get("/ws", middlewares.WebSocketAuth(), websocket.New(handlers.HandleWebSocket))
 
@@ -40,9 +42,16 @@ func ServerRoutes(router fiber.Router) {
 	router.Get("/:id", handlers.GetServer)       // GET    /servers/:id
 	router.Patch("/:id", handlers.UpdateServer)  // PATCH  /servers/:id
 	router.Delete("/:id", handlers.DeleteServer) // DELETE /servers/:id
+	router.Get("/:serverId/channels", handlers.GetServerChannelsAndCategories)
 
 	// Joindre un serveur existant
 	router.Post("/:id/join", handlers.JoinServer) // POST   /servers/:id/join
-
 	// NOTE: on a supprimé /owned et /member, tout est maintenant via GET /
+}
+
+func ChannelRoutes(router fiber.Router) {
+	router.Post("/", handlers.CreateChannel)
+	router.Patch("/:id", handlers.UpdateChannel)
+	router.Delete("/:id", handlers.DeleteChannel)
+
 }

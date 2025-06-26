@@ -40,45 +40,69 @@ type serverResponse struct {
 // ----------------------
 // 📌 Créer un serveur
 // ----------------------
+// CreateServer gère la création d'un serveur, d'une catégorie par défaut et d'un salon général.
 func CreateServer(c *fiber.Ctx) error {
-	// ✅ On lit les champs depuis un formulaire multipart
+	// 1. Validation des entrées
 	serverName := c.FormValue("name")
-	utils.Info(serverName)
 	if strings.TrimSpace(serverName) == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Le nom du serveur est requis (server)."})
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Le nom du serveur est requis."})
 	}
 
+	// 2. Récupération de l'utilisateur et de ses infos
 	rawUserID := c.Locals("user_id").(*uuid.UUID)
 	gocqlUserID := gocql.UUID(*rawUserID)
 
-	// La fonction helper gère l'upload depuis le champ "icon" du formulaire
+	var username, userAvatar string
+	if err := db.Session.Query(`SELECT username, avatar FROM users WHERE id = ?`, gocqlUserID).Scan(&username, &userAvatar); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Impossible de récupérer le profil de l'utilisateur."})
+	}
+
+	// 3. Traitement de l'icône (si fournie)
 	avatarURL, err := processAndUploadIcon(c, "icon", "server-icon-")
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": err.Error()})
 	}
 
+	// 4. Préparation des données et des IDs
 	serverID := gocql.TimeUUID()
+	categoryID := gocql.TimeUUID()
+	channelID := gocql.TimeUUID()
 	createdAt := time.Now()
-	var username, userAvatar string
-	if err := db.Session.Query(`SELECT username, avatar FROM users WHERE id = ?`, gocqlUserID).Scan(&username, &userAvatar); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Impossible de récupérer le profil."})
-	}
 
+	// 5. Création d'un batch pour assurer l'atomicité des écritures
 	batch := db.Session.NewBatch(gocql.LoggedBatch)
+
+	// Requête pour créer le serveur
 	batch.Query(`INSERT INTO servers (server_id, name, owner_id, created_at, avatar) VALUES (?, ?, ?, ?, ?)`,
 		serverID, serverName, gocqlUserID, createdAt, avatarURL)
 
+	// Requête pour lier l'utilisateur au serveur
 	batch.Query(`INSERT INTO user_servers (user_id, server_id, role, joined_at, server_avatar) VALUES (?, ?, ?, ?, ?)`,
 		gocqlUserID, serverID, "owner", createdAt, avatarURL)
 
+	// Requête pour ajouter l'utilisateur à la liste des membres du serveur
 	batch.Query(`INSERT INTO server_members (server_id, user_id, role, joined_at, username, avatar) VALUES (?, ?, ?, ?, ?, ?)`,
 		serverID, gocqlUserID, "owner", createdAt, username, userAvatar)
 
+	// Requête pour créer la catégorie par défaut "Salons Textuels"
+	batch.Query(`INSERT INTO categories_by_server (server_id, category_id, name, position) VALUES (?, ?, ?, ?)`,
+		serverID, categoryID, "Salons Textuels", 0)
+
+	// Requête pour créer le salon #général (source de vérité)
+	batch.Query(`INSERT INTO channels (channel_id, server_id, category_id, name, type, is_private, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		channelID, serverID, categoryID, "général", "text", false, 0, createdAt)
+
+	// Requête pour dénormaliser le salon #général pour une lecture rapide
+	batch.Query(`INSERT INTO channels_by_server (server_id, category_id, position, channel_id, name, type, is_private) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		serverID, categoryID, 0, channelID, "général", "text", false)
+
+	// 6. Exécution du batch
 	if err := db.Session.ExecuteBatch(batch); err != nil {
-		utils.Error("Server creation batch failed", "err", err)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Erreur lors de la création du serveur."})
+		utils.Error("Le batch de création de serveur a échoué", "err", err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Erreur critique lors de la création du serveur."})
 	}
 
+	// 7. Réponse en cas de succès
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"message":    "Serveur créé avec succès !",
 		"server_id":  serverID.String(),

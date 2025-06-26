@@ -22,15 +22,17 @@ type Client struct {
 	CurrentServerID string
 }
 
+// La SEULE et UNIQUE définition de la struct Message, avec le nom du serveur.
 type Message struct {
-	Type      string `json:"type"`
-	ServerID  string `json:"serverId,omitempty"`
-	UserID    string `json:"userId,omitempty"`
-	Username  string `json:"username,omitempty"`
-	Avatar    string `json:"avatar,omitempty"`
-	Content   string `json:"content,omitempty"`
-	Timestamp int64  `json:"timestamp,omitempty"`
-	Status    string `json:"status,omitempty"`
+	Type       string `json:"type"`
+	ServerID   string `json:"serverId,omitempty"`
+	ServerName string `json:"serverName,omitempty"`
+	UserID     string `json:"userId,omitempty"`
+	Username   string `json:"username,omitempty"`
+	Avatar     string `json:"avatar,omitempty"`
+	Content    string `json:"content,omitempty"`
+	Timestamp  int64  `json:"timestamp,omitempty"`
+	Status     string `json:"status,omitempty"`
 }
 
 var (
@@ -46,9 +48,8 @@ func WebSocketHandler(c *fiber.Ctx) error {
 }
 
 func HandleWebSocket(c *websocket.Conn) {
+	// Récupération de l'ID utilisateur
 	userIDPtr, ok := c.Locals("user_id").(*uuid.UUID)
-	utils.Info("TEST 2 : " + userIDPtr.String())
-
 	if !ok || userIDPtr == nil || *userIDPtr == uuid.Nil {
 		utils.Error("userID non trouvé ou invalide dans les locaux du contexte Fiber.")
 		c.Close()
@@ -56,6 +57,7 @@ func HandleWebSocket(c *websocket.Conn) {
 	}
 	userId := *userIDPtr
 
+	// Récupération des données utilisateur
 	userData, err := dbTools.GetUserByID(&userId)
 	if err != nil {
 		utils.Error("Erreur lors de la récupération des données utilisateur (" + userId.String() + "): " + err.Error())
@@ -63,6 +65,7 @@ func HandleWebSocket(c *websocket.Conn) {
 		return
 	}
 
+	// Création du client WebSocket
 	currentClient := &Client{
 		UserID:   userId,
 		Username: userData.Username,
@@ -74,65 +77,52 @@ func HandleWebSocket(c *websocket.Conn) {
 	clients[c] = currentClient
 	mutex.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := utils.RedisSAdd(ctx, "online_users", currentClient.UserID.String()); err != nil {
-		utils.Error("Erreur RedisSAdd online_users pour " + currentClient.UserID.String() + ": " + err.Error())
-	}
-
-	presenceOnlineMsg, _ := json.Marshal(Message{
-		Type:      "presence",
-		UserID:    currentClient.UserID.String(),
-		Username:  currentClient.Username,
-		Avatar:    currentClient.Avatar,
-		Content:   "s'est connecté",
-		Status:    "online",
-		Timestamp: time.Now().UnixNano() / int64(time.Millisecond),
-	})
-	if err := utils.RedisPublish(ctx, "user:presence:updates", presenceOnlineMsg); err != nil {
-		utils.Error("Erreur publication présence online: " + err.Error())
-	}
+	// Gestion de la présence (online)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := utils.RedisSAdd(ctx, "online_users", currentClient.UserID.String()); err != nil {
+			utils.Error("Erreur RedisSAdd online_users pour " + currentClient.UserID.String() + ": " + err.Error())
+		}
+		presenceOnlineMsg, _ := json.Marshal(Message{
+			Type: "presence", UserID: currentClient.UserID.String(), Username: currentClient.Username,
+			Avatar: currentClient.Avatar, Content: "s'est connecté", Status: "online", Timestamp: time.Now().UnixNano() / int64(time.Millisecond),
+		})
+		if err := utils.RedisPublish(ctx, "user:presence:updates", presenceOnlineMsg); err != nil {
+			utils.Error("Erreur publication présence online: " + err.Error())
+		}
+	}()
 
 	utils.Info("🎉 Utilisateur connecté: " + currentClient.Username + " (" + currentClient.UserID.String() + ")")
 
+	// Gestion de la déconnexion
 	defer func() {
 		utils.Info("🧹 Déconnexion détectée pour: " + currentClient.Username)
-
 		mutex.Lock()
 		delete(clients, c)
 		mutex.Unlock()
-
 		c.Close()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-
 		if err := utils.RedisSRem(ctx, "online_users", currentClient.UserID.String()); err != nil {
 			utils.Error("Erreur SRem online_users pour " + currentClient.UserID.String() + ": " + err.Error())
 		}
-
 		presenceOfflineMsg, _ := json.Marshal(Message{
-			Type:      "presence",
-			UserID:    currentClient.UserID.String(),
-			Username:  currentClient.Username,
-			Avatar:    currentClient.Avatar,
-			Content:   "s'est déconnecté",
-			Status:    "offline",
-			Timestamp: time.Now().UnixNano() / int64(time.Millisecond),
+			Type: "presence", UserID: currentClient.UserID.String(), Username: currentClient.Username,
+			Avatar: currentClient.Avatar, Content: "s'est déconnecté", Status: "offline", Timestamp: time.Now().UnixNano() / int64(time.Millisecond),
 		})
 		if err := utils.RedisPublish(ctx, "user:presence:updates", presenceOfflineMsg); err != nil {
 			utils.Error("Erreur publication présence offline: " + err.Error())
 		}
 	}()
 
+	// Boucle de lecture des messages
 	for {
 		_, rawMsg, err := c.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err) {
 				utils.Info("Connexion fermée inopinément par le client: " + err.Error())
-			} else {
-				utils.Error("Erreur de lecture WebSocket pour " + currentClient.Username + ": " + err.Error())
 			}
 			break
 		}
@@ -145,82 +135,78 @@ func HandleWebSocket(c *websocket.Conn) {
 
 		switch incomingMessage.Type {
 		case "chat":
-			if incomingMessage.ServerID != "" {
+			if incomingMessage.ServerID != "" && incomingMessage.ServerID == currentClient.CurrentServerID {
 				chatMsg := Message{
-					Type:      "chat",
-					ServerID:  incomingMessage.ServerID,
-					UserID:    currentClient.UserID.String(),
-					Username:  currentClient.Username,
-					Avatar:    currentClient.Avatar,
-					Content:   incomingMessage.Content,
+					Type: "chat", ServerID: incomingMessage.ServerID, UserID: currentClient.UserID.String(),
+					Username: currentClient.Username, Avatar: currentClient.Avatar, Content: incomingMessage.Content,
 					Timestamp: time.Now().UnixNano() / int64(time.Millisecond),
 				}
-
 				marshaledChatMsg, _ := json.Marshal(chatMsg)
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				utils.Info(fmt.Sprintf("DEBUG: Attempting to publish message to Redis channel: chat:server:%s", incomingMessage.ServerID))
-				if err := utils.RedisPublish(ctx, "chat:server:"+incomingMessage.ServerID, marshaledChatMsg); err != nil {
-					utils.Error("Erreur publication chat sur Redis: " + err.Error())
-				} else {
-					utils.Info("DEBUG: Message successfully published to Redis!")
-				}
-
-				go func(msg Message) {
-					saveCtx, saveCancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer saveCancel()
-					if err := dbTools.SaveMessageToScylla(saveCtx, msg.ServerID, msg.UserID, msg.Content, msg.Timestamp); err != nil {
-						utils.Error("Erreur lors de l'enregistrement du message dans ScyllaDB: " + err.Error())
-					}
-				}(chatMsg)
+				utils.RedisPublish(ctx, "chat:server:"+incomingMessage.ServerID, marshaledChatMsg)
+				go dbTools.SaveMessageToScylla(context.Background(), chatMsg.ServerID, chatMsg.UserID, chatMsg.Content, chatMsg.Timestamp)
 			} else {
-				utils.Warn("Message de chat reçu sans ServerID.")
+				utils.Warn(fmt.Sprintf(
+					"Message rejeté de %s. Tentative d'envoi au salon [%s] alors qu'il est dans le salon [%s].",
+					currentClient.Username,
+					incomingMessage.ServerID,
+					currentClient.CurrentServerID,
+				))
 			}
+
 		case "join_server":
 			if incomingMessage.ServerID != "" {
 				mutex.Lock()
 				currentClient.CurrentServerID = incomingMessage.ServerID
 				mutex.Unlock()
-				utils.Info("Utilisateur " + currentClient.Username + " a changé pour le serveur: " + currentClient.CurrentServerID)
-			} else {
-				utils.Warn("Message 'join_server' reçu sans ServerID.")
+
+				utils.Info(fmt.Sprintf("Utilisateur %s a rejoint le salon [%s]", currentClient.Username, currentClient.CurrentServerID))
+
+				server, err := dbTools.GetServerByID(incomingMessage.ServerID)
+				if err != nil {
+					utils.Error("Impossible de récupérer les détails du serveur " + incomingMessage.ServerID + ": " + err.Error())
+					continue
+				}
+
+				confirmationMsg := Message{
+					Type:       "join_server_success",
+					ServerID:   server.ServerID.String(),
+					ServerName: server.Name,
+				}
+				marshaledMsg, _ := json.Marshal(confirmationMsg)
+				if err := c.WriteMessage(websocket.TextMessage, marshaledMsg); err != nil {
+					utils.Error("Erreur envoi confirmation de join à " + currentClient.Username + ": " + err.Error())
+				}
 			}
+
 		case "heartbeat":
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			if err := utils.RedisSetWithTTL(ctx, "user:last_seen:"+currentClient.UserID.String(), time.Now().Unix(), 30*time.Second); err != nil {
 				utils.Error("Erreur mise à jour heartbeat: " + err.Error())
 			}
+
 		default:
 			utils.Warn("Type de message inconnu reçu du client: " + incomingMessage.Type)
 		}
 	}
 }
 
+// StartBroadcaster reste inchangée, sa logique est bonne.
 func StartBroadcaster() {
-	ctx := context.Background() // Contexte de longue durée pour l'abonnement
-
-	// Testez l'abonnement
-	// pubsub, err := utils.Redis.PSubscribe(ctx, "chat:server:*", "user:presence:updates")
-	// if err != nil {
-	// 	utils.Fatal("Broadcaster Redis - Erreur lors de l'abonnement initial: " + err.Error())
-	// }
-	// defer pubsub.Close() // Fermer à la fin de StartBroadcaster
-
-	// Pour s'assurer que l'abonnement se fait, et que le canal est prêt
+	ctx := context.Background()
 	pubsub := utils.RedisPSubscribe(ctx, "chat:server:*", "user:presence:updates")
 	if pubsub == nil {
 		utils.Fatal("Broadcaster Redis - pubsub client est nil après PSubscribe.")
 	}
-	// Récupérer le canal de réception des messages
 	ch := pubsub.Channel()
 
 	utils.Info("Broadcaster Redis démarré et abonné aux canaux.")
-	utils.Info("Attente des messages Pub/Sub...") // Log pour confirmer que nous attendons
+	utils.Info("Attente des messages Pub/Sub...")
 
 	go func() {
-		for msg := range ch { // Lisez depuis le canal des messages
-			utils.Info("DEBUG: Broadcaster received message from Redis channel: " + msg.Channel)
+		for msg := range ch {
 			var event Message
 			if err := json.Unmarshal([]byte(msg.Payload), &event); err != nil {
 				utils.Error("Erreur unmarshalling message Redis (" + msg.Channel + "): " + err.Error())
@@ -245,6 +231,6 @@ func StartBroadcaster() {
 			}
 			mutex.Unlock()
 		}
-		utils.Info("Broadcaster Redis: Le canal de messages a été fermé, goroutine arrêtée.") // Si la boucle se termine
+		utils.Info("Broadcaster Redis: Le canal de messages a été fermé, goroutine arrêtée.")
 	}()
 }
