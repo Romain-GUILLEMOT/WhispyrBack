@@ -2,23 +2,22 @@ package dbTools
 
 import (
 	"context"
-	"fmt" // Importe le package fmt pour fmt.Errorf
+	"fmt"
 	"time"
 
-	"github.com/Romain-GUILLEMOT/WhispyrBack/db"    // Importe votre instance de session ScyllaDB
-	"github.com/Romain-GUILLEMOT/WhispyrBack/utils" // Pour les logs (utils.Error, utils.Info)
-	"github.com/gocql/gocql"                        // Importe le package gocql pour son type UUID (nécessaire pour la conversion)
-	"github.com/google/uuid"                        // Importe le package google/uuid (pour le parsing initial)
+	"github.com/Romain-GUILLEMOT/WhispyrBack/db"
+	"github.com/Romain-GUILLEMOT/WhispyrBack/utils"
+	"github.com/gocql/gocql"
+	"github.com/google/uuid"
 )
 
-// SaveMessageToScylla enregistre un message dans la table messages_by_channel.
-// Il utilise le `day_bucket` et le `sent_at` (TIMEUUID) pour optimiser les requêtes.
-func SaveMessageToScylla(ctx context.Context, serverIDStr string, userIDStr string, content string, timestamp int64) error {
-	// Conversion des IDs string en UUIDs Go (type github.com/google/uuid.UUID)
-	googleServerID, err := uuid.Parse(serverIDStr)
+// MODIFIÉ : La fonction accepte maintenant channelIDStr en plus.
+func SaveMessageToScylla(ctx context.Context, serverIDStr string, channelIDStr string, userIDStr string, content string, timestamp int64) error {
+	// Conversion des IDs string en UUIDs Go
+	googleChannelID, err := uuid.Parse(channelIDStr)
 	if err != nil {
-		utils.Error(fmt.Sprintf("SaveMessageToScylla: Invalid server ID format for '%s': %v", serverIDStr, err))
-		return fmt.Errorf("invalid server ID format: %w", err)
+		utils.Error(fmt.Sprintf("SaveMessageToScylla: Invalid channel ID format for '%s': %v", channelIDStr, err))
+		return fmt.Errorf("invalid channel ID format: %w", err)
 	}
 	googleSenderID, err := uuid.Parse(userIDStr)
 	if err != nil {
@@ -26,39 +25,72 @@ func SaveMessageToScylla(ctx context.Context, serverIDStr string, userIDStr stri
 		return fmt.Errorf("invalid user ID format: %w", err)
 	}
 
-	// CONVERSION CRUCIALE : Convertir github.com/google/uuid.UUID en github.com/gocql/gocql.UUID
-	gocqlServerID := gocql.UUID(googleServerID)
+	// Conversion des UUIDs Go en UUIDs gocql
+	gocqlChannelID := gocql.UUID(googleChannelID)
 	gocqlSenderID := gocql.UUID(googleSenderID)
 
-	// Conversion du timestamp Unix (millisecondes) en temps Go
+	// Conversion du timestamp et création du TIMEUUID
 	sentAtTime := time.Unix(0, timestamp*int64(time.Millisecond))
-
-	// Création du TIMEUUID pour 'sent_at' (gocql.UUID est déjà le bon type ici)
 	sentAtUUID := gocql.UUIDFromTime(sentAtTime)
+	dayBucket := sentAtTime // Si day_bucket est de type TIMESTAMP ou DATE dans Scylla, utilisez time.Time
 
-	// Création du day_bucket (date sans l'heure). gocql gérera la conversion vers le type CQL DATE.
-	dayBucket := sentAtTime
-
-	// La requête d'insertion.
-	// La table messages_by_channel utilise channel_id. Pour le moment, nous utilisons serverID
-	// comme channel_id, car vous avez dit "un chat par serveurs sans prendre en compte les channels".
-	// Lorsque vous implémenterez les channels, vous devrez passer l'ID du channel réel ici.
+	// MODIFIÉ : La requête utilise maintenant le vrai channel_id
 	query := `INSERT INTO messages_by_channel (channel_id, day_bucket, sent_at, sender_id, content) VALUES (?, ?, ?, ?, ?)`
 
-	// Exécution de la requête en utilisant db.Session
 	err = db.Session.Query(query,
-		gocqlServerID, // Utilisation de gocql.UUID converti
+		gocqlChannelID, // Utilisation de l'ID du salon
 		dayBucket,
 		sentAtUUID,
-		gocqlSenderID, // Utilisation de gocql.UUID converti
+		gocqlSenderID,
 		content,
 	).WithContext(ctx).Exec()
 
 	if err != nil {
-		utils.Error(fmt.Sprintf("SaveMessageToScylla: Failed to insert message into ScyllaDB for server %s by user %s: %v", serverIDStr, userIDStr, err))
+		utils.Error(fmt.Sprintf("SaveMessageToScylla: Failed to insert message into ScyllaDB for channel %s by user %s: %v", channelIDStr, userIDStr, err))
 		return fmt.Errorf("failed to insert message into ScyllaDB: %w", err)
 	}
 
-	utils.Info("Message saved to ScyllaDB for server " + serverIDStr + " by user " + userIDStr)
+	utils.Info(fmt.Sprintf("Message saved to ScyllaDB for channel %s (server %s) by user %s", channelIDStr, serverIDStr, userIDStr))
 	return nil
 }
+
+// NOTE : Vous devrez peut-être ajouter la fonction GetServerByID et GetUserByID
+// ou vous assurer que leur implémentation est disponible dans ce package ou ailleurs.
+// Exemple (à adapter selon votre structure de DB et vos modèles) :
+/*
+import (
+	"github.com/Romain-GUILLEMOT/WhispyrBack/models" // Assurez-vous que le chemin est correct pour vos modèles
+	"github.com/gocql/gocql"
+)
+
+func GetUserByID(userID *uuid.UUID) (*models.User, error) {
+    var user models.User
+    query := "SELECT id, username, avatar FROM users WHERE id = ?"
+    gocqlUserID := gocql.UUID(*userID)
+    if err := db.Session.Query(query, gocqlUserID).Scan(&user.UserID, &user.Username, &user.Avatar); err != nil {
+        if err == gocql.ErrNotFound {
+            return nil, fmt.Errorf("user not found: %s", userID.String())
+        }
+        return nil, fmt.Errorf("error getting user by ID %s: %w", userID.String(), err)
+    }
+    return &user, nil
+}
+
+func GetServerByID(serverID string) (*models.Server, error) {
+    var server models.Server
+    serverUUID, err := uuid.Parse(serverID)
+    if err != nil {
+        return nil, fmt.Errorf("invalid server ID format: %w", err)
+    }
+    gocqlServerID := gocql.UUID(serverUUID)
+
+    query := "SELECT id, name FROM servers WHERE id = ?"
+    if err := db.Session.Query(query, gocqlServerID).Scan(&server.ServerID, &server.Name); err != nil {
+        if err == gocql.ErrNotFound {
+            return nil, fmt.Errorf("server not found: %s", serverID)
+        }
+        return nil, fmt.Errorf("error getting server by ID %s: %w", serverID, err)
+    }
+    return &server, nil
+}
+*/

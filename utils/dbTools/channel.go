@@ -2,9 +2,32 @@ package dbTools
 
 import (
 	"github.com/Romain-GUILLEMOT/WhispyrBack/db"
+	"github.com/Romain-GUILLEMOT/WhispyrBack/models"
 	"github.com/gocql/gocql"
 	"time"
 )
+
+// GetChannelByID récupère un salon et son nom par son ID.
+func GetChannelByID(id string) (*models.Channel, error) {
+	var channel models.Channel
+
+	// Convertit l'ID string du message en gocql.UUID pour la requête
+	parsedID, err := gocql.ParseUUID(id)
+	if err != nil {
+		return nil, err
+	}
+
+	query := `SELECT channel_id, name FROM channels WHERE channel_id = ? LIMIT 1`
+
+	if err := db.Session.Query(query, parsedID).Scan(
+		&channel.ChannelID,
+		&channel.Name,
+	); err != nil {
+		return nil, err
+	}
+
+	return &channel, nil
+}
 
 // CreateChannelInDB insère un nouveau salon dans toutes les tables nécessaires.
 func CreateChannelInDB(serverIDStr, categoryIDStr, name, channelType string) error {

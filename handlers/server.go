@@ -116,7 +116,7 @@ func CreateServer(c *fiber.Ctx) error {
 // 📌 Joindre un serveur
 // ----------------------
 func JoinServer(c *fiber.Ctx) error {
-	serverID, err := gocql.ParseUUID(c.Params("id"))
+	serverID, err := gocql.ParseUUID(c.Params("serverId"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "ID de serveur invalide."})
 	}
@@ -230,7 +230,7 @@ func GetUserServers(c *fiber.Ctx) error {
 // 📌 Get infos détaillées d'un serveur
 // ----------------------
 func GetServer(c *fiber.Ctx) error {
-	serverID, err := gocql.ParseUUID(c.Params("id"))
+	serverID, err := gocql.ParseUUID(c.Params("serverId"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "ID invalide."})
 	}
@@ -263,7 +263,7 @@ func GetServer(c *fiber.Ctx) error {
 // 📌 Modifier un serveur (nom et/ou avatar)
 // ----------------------
 func UpdateServer(c *fiber.Ctx) error {
-	serverID, err := gocql.ParseUUID(c.Params("id"))
+	serverID, err := gocql.ParseUUID(c.Params("serverId"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "ID invalide."})
 	}
@@ -328,7 +328,7 @@ func UpdateServer(c *fiber.Ctx) error {
 // 📌 Supprimer un serveur
 // ----------------------
 func DeleteServer(c *fiber.Ctx) error {
-	serverID, err := gocql.ParseUUID(c.Params("id"))
+	serverID, err := gocql.ParseUUID(c.Params("serverId"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "ID invalide."})
 	}

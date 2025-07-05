@@ -18,9 +18,11 @@ func SetupRoutes(app *fiber.App) {
 	auth := router.Group("/auth")
 	AuthRoutes(auth)
 	servers := router.Group("/servers", middlewares.RequireAuth())
-	ServerRoutes(servers)
-	channels := router.Group("/channels", middlewares.RequireAuth())
-	ChannelRoutes(channels)
+	ServersRoutes(servers)
+	server := router.Group("/server/:serverId", middlewares.RequireAuth())
+	ServerRoutes(server)
+	debug := router.Group("/debug")
+	DebugRoutes(debug)
 	router.Use("/ws", middlewares.WebSocketAuth(), handlers.WebSocketHandler)
 	router.Get("/ws", middlewares.WebSocketAuth(), websocket.New(handlers.HandleWebSocket))
 
@@ -35,23 +37,29 @@ func AuthRoutes(router fiber.Router) {
 
 }
 
-func ServerRoutes(router fiber.Router) {
+func ServersRoutes(router fiber.Router) {
 	// Création / lecture / mise à jour / suppression d’un serveur
-	router.Post("/", handlers.CreateServer)      // POST   /servers
-	router.Get("/", handlers.GetUserServers)     // GET    /servers     ← liste *tous* les serveurs liés à l’utilisateur
-	router.Get("/:id", handlers.GetServer)       // GET    /servers/:id
-	router.Patch("/:id", handlers.UpdateServer)  // PATCH  /servers/:id
-	router.Delete("/:id", handlers.DeleteServer) // DELETE /servers/:id
-	router.Get("/:serverId/channels", handlers.GetServerChannelsAndCategories)
-
-	// Joindre un serveur existant
-	router.Post("/:id/join", handlers.JoinServer) // POST   /servers/:id/join
-	// NOTE: on a supprimé /owned et /member, tout est maintenant via GET /
+	router.Post("/", handlers.CreateServer)  // POST   /servers
+	router.Get("/", handlers.GetUserServers) // GET    /servers
 }
 
+func ServerRoutes(router fiber.Router) {
+	router.Post("/join", handlers.JoinServer) // POST   /servers/:id/join
+	router.Get("/", handlers.GetServer)       // GET    /servers/:id
+	router.Patch("/", handlers.UpdateServer)  // PATCH  /servers/:id
+	router.Delete("/", handlers.DeleteServer) // DELETE /servers/:id
+	channels := router.Group("/channels", middlewares.RequireAuth())
+	ChannelRoutes(channels)
+}
 func ChannelRoutes(router fiber.Router) {
+	router.Get("/", handlers.GetServerChannelsAndCategories)
 	router.Post("/", handlers.CreateChannel)
 	router.Patch("/:id", handlers.UpdateChannel)
 	router.Delete("/:id", handlers.DeleteChannel)
 
+}
+
+// --- NOUVEAU : Fonction pour les routes de debug ---
+func DebugRoutes(router fiber.Router) {
+	router.Post("/seed/channels/:channelId", handlers.SeedChannelWithMessages)
 }
