@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -36,6 +37,15 @@ type MessageInfo struct {
 	// On pourrait ajouter username/avatar ici si on voulait dénormaliser davantage
 	Content string    `json:"content"`
 	SentAt  time.Time `json:"sent_at"`
+}
+
+type MessageResponse struct {
+	ID             gocql.UUID `json:"id"`
+	Content        string     `json:"content"`
+	Timestamp      time.Time  `json:"timestamp"`
+	SenderID       gocql.UUID `json:"sender_id"`
+	SenderUsername string     `json:"username"`
+	SenderAvatar   string     `json:"avatar"`
 }
 
 // --- Handlers ---
@@ -231,127 +241,116 @@ func DeleteChannel(c *fiber.Ctx) error {
 }
 
 func GetChannelMessages(c *fiber.Ctx) error {
-	// --- ÉTAPES 1 & 2: Validation et Permissions (inchangées) ---
 	utils.Info("Début de GetChannelMessages")
 
-	serverIDStr := c.Params("serverId")
-	serverID, err := gocql.ParseUUID(serverIDStr)
+	// --- Validation et Permissions (inchangées) ---
+	serverID, err := gocql.ParseUUID(c.Params("serverId"))
 	if err != nil {
-		utils.Error("ID de serveur invalide", "id", serverIDStr)
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "ID de serveur invalide."})
 	}
-
-	channelIDStr := c.Params("channelId")
-	channelID, err := gocql.ParseUUID(channelIDStr)
+	channelID, err := gocql.ParseUUID(c.Params("id"))
 	if err != nil {
-		utils.Error("ID de salon invalide", "id", channelIDStr)
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "ID de salon invalide."})
 	}
-
-	rawUserID := c.Locals("user_id").(*uuid.UUID)
-	userID := gocql.UUID(*rawUserID)
-
-	var count int
-	if err := db.Session.Query(`SELECT count(*) FROM server_members WHERE server_id = ? AND user_id = ? LIMIT 1`, serverID, userID).Scan(&count); err != nil {
+	userID := gocql.UUID(*c.Locals("user_id").(*uuid.UUID))
+	var foundServer gocql.UUID
+	if err := db.Session.Query(`SELECT server_id FROM server_members WHERE server_id = ? AND user_id = ? LIMIT 1`, serverID, userID).Scan(&foundServer); err != nil {
+		if err == gocql.ErrNotFound {
+			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"message": "Vous n'êtes pas membre de ce serveur."})
+		}
 		utils.Error("Erreur lors de la vérification des membres du serveur", "error", err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Erreur interne."})
 	}
 
-	if count == 0 {
-		utils.Warn("Tentative d'accès non autorisé", "user_id", userID, "server_id", serverID)
-		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"message": "Vous n'êtes pas membre de ce serveur."})
-	}
-
-	// --- ÉTAPE 3: Gestion de la pagination (revue et corrigée) ---
+	// --- Pagination (inchangée) ---
 	limitStr := c.Query("limit", "50")
 	limit, _ := strconv.Atoi(limitStr)
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
+	fetchLimit := limit + 1
 
+	// --- Récupération des données ---
+	startDate := time.Now().UTC()
 	cursorStr := c.Query("cursor")
-	var startDate time.Time
-	var cursorQueryPart string
-	var cursorQueryArgs []interface{}
+	if cursorStr != "" {
+		cursorUUID, err := gocql.ParseUUID(cursorStr)
+		if err == nil {
+			startDate = cursorUUID.Time().UTC()
+		}
+	}
+
+	const daysToScan = 30
+	dayBuckets := make([]string, 0, daysToScan)
+	for i := 0; i < daysToScan; i++ {
+		dayBuckets = append(dayBuckets, startDate.AddDate(0, 0, -i).Format("2006-01-02"))
+	}
+
+	placeholders := strings.Repeat("?,", len(dayBuckets)-1) + "?"
+
+	// ✅ MODIFIÉ : La requête SELECT récupère les nouvelles colonnes dénormalisées.
+	query := fmt.Sprintf(`SELECT sent_at, sender_id, content, sender_username, sender_avatar FROM messages_by_channel
+                          WHERE channel_id = ? AND day_bucket IN (%s) LIMIT ?`, placeholders)
+
+	args := make([]interface{}, 0, 1+len(dayBuckets)+1)
+	args = append(args, channelID)
+	for _, bucket := range dayBuckets {
+		args = append(args, bucket)
+	}
+	args = append(args, fetchLimit)
+
+	iter := db.Session.Query(query, args...).Iter()
+
+	// ✅ MODIFIÉ : Le slice utilise notre nouvelle structure de réponse.
+	allMessages := make([]MessageResponse, 0)
+
+	// ✅ MODIFIÉ : Variables pour accueillir les nouvelles données.
+	var msgID, senderID gocql.UUID
+	var content, senderUsername, senderAvatar string
+
+	// ✅ MODIFIÉ : On scanne les 5 colonnes.
+	for iter.Scan(&msgID, &senderID, &content, &senderUsername, &senderAvatar) {
+		allMessages = append(allMessages, MessageResponse{
+			ID:             msgID,
+			Content:        content,
+			Timestamp:      msgID.Time(),
+			SenderID:       senderID,
+			SenderUsername: senderUsername,
+			SenderAvatar:   senderAvatar,
+		})
+	}
+	if err := iter.Close(); err != nil {
+		utils.Error("Erreur lors de la lecture des messages", "error", err)
+		return c.Status(500).JSON(fiber.Map{"message": "Erreur lors de la récupération des messages."})
+	}
+
+	// --- Traitement du tri et du curseur (la logique reste la même) ---
+
+	sort.Slice(allMessages, func(i, j int) bool {
+		return allMessages[i].Timestamp.After(allMessages[j].Timestamp)
+	})
 
 	if cursorStr != "" {
-		cursor, err := gocql.ParseUUID(cursorStr)
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Curseur de pagination invalide."})
-		}
-		// On extrait l'heure du TIMEUUID pour trouver le point de départ
-		startDate = cursor.Time().UTC()
-		cursorQueryPart = `AND sent_at < ?`
-		cursorQueryArgs = []interface{}{cursor}
-	} else {
-		// Pas de curseur, on part d'aujourd'hui
-		startDate = time.Now().UTC()
-	}
-
-	// --- ÉTAPE 4: Récupération des messages (boucle intelligente) ---
-	messages := make([]MessageInfo, 0, limit)
-	var lastMessageID gocql.UUID
-
-	// On boucle en arrière dans le temps, jour par jour, à partir de startDate.
-	// On met une limite raisonnable (ex: 5 ans) pour éviter une boucle infinie en cas d'erreur.
-	for i := 0; i < 365*5; i++ {
-		currentDate := startDate.AddDate(0, 0, -i)
-		dayBucket := currentDate.Format("2006-01-02")
-
-		query := fmt.Sprintf(`SELECT sent_at, sender_id, content FROM messages_by_channel WHERE channel_id = ? AND day_bucket = ? %s ORDER BY sent_at DESC LIMIT ?`, cursorQueryPart)
-
-		// Le `LIMIT` est le nombre de messages qu'il nous reste à trouver
-		remainingLimit := limit - len(messages)
-
-		args := append([]interface{}{channelID, dayBucket}, cursorQueryArgs...)
-		args = append(args, remainingLimit)
-
-		iter := db.Session.Query(query, args...).Iter()
-
-		var msgID, senderID gocql.UUID
-		var content string
-
-		tempMessages := make([]MessageInfo, 0)
-		for iter.Scan(&msgID, &senderID, &content) {
-			tempMessages = append(tempMessages, MessageInfo{
-				MessageID: msgID,
-				SenderID:  senderID,
-				Content:   content,
-				SentAt:    msgID.Time(),
-			})
-		}
-
-		if err := iter.Close(); err != nil {
-			utils.Error("Erreur lors de la lecture des messages", "error", err, "bucket", dayBucket)
-			return c.Status(500).JSON(fiber.Map{"message": "Erreur lors de la récupération des messages."})
-		}
-
-		if len(tempMessages) > 0 {
-			messages = append(messages, tempMessages...)
-			// Le dernier message trouvé dans cette page devient le nouveau curseur potentiel.
-			lastMessageID = tempMessages[len(tempMessages)-1].MessageID
-
-			// Si on a assez de messages, on arrête.
-			if len(messages) >= limit {
-				break
+		cursorUUID, _ := gocql.ParseUUID(cursorStr)
+		filteredMessages := make([]MessageResponse, 0)
+		for _, msg := range allMessages {
+			if msg.ID.Time().Before(cursorUUID.Time()) {
+				filteredMessages = append(filteredMessages, msg)
 			}
-
-			// On met à jour le curseur pour la prochaine itération de la boucle (pour le jour J-1, J-2, etc.).
-			// Cela assure une continuité parfaite entre les jours.
-			cursorQueryPart = `AND sent_at < ?`
-			cursorQueryArgs = []interface{}{lastMessageID}
 		}
+		allMessages = filteredMessages
 	}
 
-	// --- ÉTAPE 5: Renvoyer la réponse ---
 	var nextCursor string
-	if len(messages) >= limit {
-		// On renvoie l'ID du dernier message de la liste comme curseur pour la page suivante.
-		nextCursor = messages[len(messages)-1].MessageID.String()
+	messages := allMessages
+	if len(allMessages) > limit {
+		messages = allMessages[:limit]
+		nextCursor = messages[len(messages)-1].ID.String()
 	}
 
+	// ✅ MODIFIÉ : La clé de la réponse est "data" pour correspondre au front-end.
 	return c.JSON(fiber.Map{
-		"messages":    messages,
+		"data":        messages,
 		"next_cursor": nextCursor,
 	})
 }

@@ -304,7 +304,15 @@ func handleChatMessage(currentClient *Client, incomingMessage Message) {
 		utils.Error("Erreur publication message chat Redis: " + err.Error())
 	}
 
-	go dbTools.SaveMessageToScylla(context.Background(), chatMsg.ServerID, chatMsg.ChannelID, chatMsg.UserID, chatMsg.Content, chatMsg.Timestamp)
+	go dbTools.SaveMessageToScylla(
+		context.Background(),
+		chatMsg.ServerID,
+		chatMsg.ChannelID,
+		chatMsg.UserID,
+		chatMsg.Content,
+		currentClient.Username, // Ajouté
+		currentClient.Avatar,   // Ajouté
+	)
 }
 
 func handleHeartbeat(currentClient *Client) error {

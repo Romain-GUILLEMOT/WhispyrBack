@@ -51,12 +51,13 @@ func ServerRoutes(router fiber.Router) {
 	channels := router.Group("/channels", middlewares.RequireAuth())
 	ChannelRoutes(channels)
 }
+
 func ChannelRoutes(router fiber.Router) {
+	router.Get("/:id/messages", handlers.GetChannelMessages)
 	router.Get("/", handlers.GetServerChannelsAndCategories)
 	router.Post("/", handlers.CreateChannel)
 	router.Patch("/:id", handlers.UpdateChannel)
 	router.Delete("/:id", handlers.DeleteChannel)
-
 }
 
 // --- NOUVEAU : Fonction pour les routes de debug ---

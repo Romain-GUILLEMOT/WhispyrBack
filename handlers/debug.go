@@ -1,3 +1,5 @@
+// Fichier : handlers/debug.go
+
 package handlers
 
 import (
@@ -15,7 +17,6 @@ import (
 const godToken = "AO24JFjIORJO2LF2LFK2LKFI30O3jfoJF3OJF3"
 
 // mustParse est une fonction d'aide pour parser les UUIDs de test sans alourdir le code.
-// Si un UUID est invalide (ce qui ne devrait pas arriver pour nos tests), le programme s'arrête.
 func mustParse(uuidStr string) gocql.UUID {
 	u, err := gocql.ParseUUID(uuidStr)
 	if err != nil {
@@ -24,13 +25,20 @@ func mustParse(uuidStr string) gocql.UUID {
 	return u
 }
 
-// listes pour générer des messages aléatoires
-var sampleUsers = []gocql.UUID{
-	mustParse("11111111-1111-1111-1111-111111111111"),
-	mustParse("22222222-2222-2222-2222-222222222222"),
-	mustParse("33333333-3333-3333-3333-333333333333"),
-	mustParse("44444444-4444-4444-4444-444444444444"),
-	mustParse("55555555-5555-5555-5555-555555555555"),
+// ✅ Structure pour des données de test plus riches
+type SampleUser struct {
+	ID       gocql.UUID
+	Username string
+	Avatar   string
+}
+
+// ✅ Liste de test mise à jour avec des profils complets
+var sampleUsers = []SampleUser{
+	{ID: mustParse("11111111-1111-1111-1111-111111111111"), Username: "Kirito", Avatar: "https://example.com/kirito.webp"},
+	{ID: mustParse("22222222-2222-2222-2222-222222222222"), Username: "Asuna", Avatar: "https://example.com/asuna.webp"},
+	{ID: mustParse("33333333-3333-3333-3333-333333333333"), Username: "Subaru", Avatar: "https://example.com/subaru.webp"},
+	{ID: mustParse("44444444-4444-4444-4444-444444444444"), Username: "Emilia", Avatar: "https://example.com/emilia.webp"},
+	{ID: mustParse("55555555-5555-5555-5555-555555555555"), Username: "Frieren", Avatar: "https://example.com/frieren.webp"},
 }
 
 var sampleMessages = []string{
@@ -61,8 +69,8 @@ func SeedChannelWithMessages(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "ID de salon invalide."})
 	}
 
-	count := c.QueryInt("count", 500000)
-	years := c.QueryInt("years", 5)
+	count := c.QueryInt("count", 10000) // Réduit par défaut pour des tests plus rapides
+	years := c.QueryInt("years", 2)
 
 	utils.Info(fmt.Sprintf("Début du seeding de %d messages pour le salon %s sur %d années", count, channelID, years))
 
@@ -75,17 +83,19 @@ func SeedChannelWithMessages(c *fiber.Ctx) error {
 		randomSeconds := rand.Int63n(int64(years) * 365 * 24 * 60 * 60)
 		randomTime := time.Now().Add(-time.Second * time.Duration(randomSeconds))
 
-		// En déduire le day_bucket et le TIMEUUID
 		dayBucket := randomTime.UTC().Format("2006-01-02")
 		messageUUID := gocql.UUIDFromTime(randomTime)
 
-		// Choisir un utilisateur et un message aléatoires
-		senderID := sampleUsers[rand.Intn(len(sampleUsers))]
+		// ✅ Choisir un utilisateur et un message aléatoires
+		sender := sampleUsers[rand.Intn(len(sampleUsers))]
 		content := sampleMessages[rand.Intn(len(sampleMessages))]
 
-		// Ajouter l'insertion au batch
-		query := `INSERT INTO messages_by_channel (channel_id, day_bucket, sent_at, sender_id, content) VALUES (?, ?, ?, ?, ?)`
-		batch.Query(query, channelID, dayBucket, messageUUID, senderID, content)
+		// ✅ Ajouter l'insertion au batch avec les champs dénormalisés
+		query := `
+            INSERT INTO messages_by_channel (
+                channel_id, day_bucket, sent_at, sender_id, content, sender_username, sender_avatar
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+		batch.Query(query, channelID, dayBucket, messageUUID, sender.ID, content, sender.Username, sender.Avatar)
 
 		// Exécuter le batch quand il est plein
 		if (i+1)%batchSize == 0 {
@@ -93,9 +103,8 @@ func SeedChannelWithMessages(c *fiber.Ctx) error {
 				utils.Error("Erreur lors de l'exécution du batch de seeding", "error", err)
 				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Erreur lors du seeding."})
 			}
-			// Réinitialiser le batch pour le prochain paquet
 			batch = db.Session.NewBatch(gocql.LoggedBatch)
-			if (i+1)%10000 == 0 {
+			if (i+1)%1000 == 0 {
 				utils.Info(fmt.Sprintf("%d messages sur %d insérés...", i+1, count))
 			}
 		}
