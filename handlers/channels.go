@@ -240,10 +240,11 @@ func DeleteChannel(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusOK).JSON(fiber.Map{"message": "Salon supprimé."})
 }
 
+// GetChannelMessages gère la récupération paginée des messages pour un salon.
 func GetChannelMessages(c *fiber.Ctx) error {
 	utils.Info("Début de GetChannelMessages")
 
-	// --- Validation et Permissions (inchangées) ---
+	// --- Validation et Permissions ---
 	serverID, err := gocql.ParseUUID(c.Params("serverId"))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "ID de serveur invalide."})
@@ -252,7 +253,31 @@ func GetChannelMessages(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "ID de salon invalide."})
 	}
-	userID := gocql.UUID(*c.Locals("user_id").(*uuid.UUID))
+
+	userIDClaim := c.Locals("user_id")
+	if userIDClaim == nil {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"message": "Non authentifié."})
+	}
+
+	var userID gocql.UUID
+	var ok bool
+	userID, ok = userIDClaim.(gocql.UUID)
+	if !ok {
+		if userIDPtr, ok := userIDClaim.(*gocql.UUID); ok && userIDPtr != nil {
+			userID = *userIDPtr
+		} else if googleUUIDPtr, ok := userIDClaim.(*uuid.UUID); ok && googleUUIDPtr != nil {
+			userID = gocql.UUID(*googleUUIDPtr)
+		} else if userIDStr, ok := userIDClaim.(string); ok {
+			userID, err = gocql.ParseUUID(userIDStr)
+			if err != nil {
+				return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"message": "Format d'ID utilisateur invalide dans le token."})
+			}
+		} else {
+			utils.Error("Type de user_id non géré", "type", fmt.Sprintf("%T", userIDClaim))
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Type d'ID utilisateur invalide en contexte."})
+		}
+	}
+
 	var foundServer gocql.UUID
 	if err := db.Session.Query(`SELECT server_id FROM server_members WHERE server_id = ? AND user_id = ? LIMIT 1`, serverID, userID).Scan(&foundServer); err != nil {
 		if err == gocql.ErrNotFound {
@@ -262,95 +287,103 @@ func GetChannelMessages(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Erreur interne."})
 	}
 
-	// --- Pagination (inchangée) ---
+	// --- Pagination et Limite ---
 	limitStr := c.Query("limit", "50")
-	limit, _ := strconv.Atoi(limitStr)
-	if limit <= 0 || limit > 100 {
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	fetchLimit := limit + 1
-
-	// --- Récupération des données ---
-	startDate := time.Now().UTC()
 	cursorStr := c.Query("cursor")
-	if cursorStr != "" {
-		cursorUUID, err := gocql.ParseUUID(cursorStr)
-		if err == nil {
-			startDate = cursorUUID.Time().UTC()
-		}
-	}
+	// On fetch beaucoup plus de messages pour pouvoir filtrer et avoir assez de messages pour une page.
+	fetchLimit := limit * 5
 
-	const daysToScan = 30
+	// --- Logique de Day Bucket ---
+	const daysToScan = 30 // Nombre de jours à scanner en arrière
 	dayBuckets := make([]string, 0, daysToScan)
+	startDate := time.Now().UTC()
 	for i := 0; i < daysToScan; i++ {
 		dayBuckets = append(dayBuckets, startDate.AddDate(0, 0, -i).Format("2006-01-02"))
 	}
 
+	// --- Construction de la requête ---
 	placeholders := strings.Repeat("?,", len(dayBuckets)-1) + "?"
+	query := fmt.Sprintf(`SELECT sent_at, sender_id, content, sender_username, sender_avatar 
+                          FROM messages_by_channel 
+                          WHERE channel_id = ? AND day_bucket IN (%s) 
+                          LIMIT ?`, placeholders)
 
-	// ✅ MODIFIÉ : La requête SELECT récupère les nouvelles colonnes dénormalisées.
-	query := fmt.Sprintf(`SELECT sent_at, sender_id, content, sender_username, sender_avatar FROM messages_by_channel
-                          WHERE channel_id = ? AND day_bucket IN (%s) LIMIT ?`, placeholders)
-
-	args := make([]interface{}, 0, 1+len(dayBuckets)+1)
-	args = append(args, channelID)
-	for _, bucket := range dayBuckets {
-		args = append(args, bucket)
+	args := make([]interface{}, 1+len(dayBuckets)+1)
+	args[0] = channelID
+	for i, bucket := range dayBuckets {
+		args[i+1] = bucket
 	}
-	args = append(args, fetchLimit)
+	args[len(args)-1] = fetchLimit
 
 	iter := db.Session.Query(query, args...).Iter()
 
-	// ✅ MODIFIÉ : Le slice utilise notre nouvelle structure de réponse.
-	allMessages := make([]MessageResponse, 0)
-
-	// ✅ MODIFIÉ : Variables pour accueillir les nouvelles données.
+	// --- Scan des résultats ---
+	allMessages := make([]MessageResponse, 0, fetchLimit)
 	var msgID, senderID gocql.UUID
-	var content, senderUsername, senderAvatar string
+	var content string
+	var senderUsername, senderAvatar *string
 
-	// ✅ MODIFIÉ : On scanne les 5 colonnes.
 	for iter.Scan(&msgID, &senderID, &content, &senderUsername, &senderAvatar) {
+		var finalUsername, finalAvatar string
+		if senderUsername != nil {
+			finalUsername = *senderUsername
+		}
+		if senderAvatar != nil {
+			finalAvatar = *senderAvatar
+		}
 		allMessages = append(allMessages, MessageResponse{
 			ID:             msgID,
 			Content:        content,
 			Timestamp:      msgID.Time(),
 			SenderID:       senderID,
-			SenderUsername: senderUsername,
-			SenderAvatar:   senderAvatar,
+			SenderUsername: finalUsername,
+			SenderAvatar:   finalAvatar,
 		})
 	}
+
 	if err := iter.Close(); err != nil {
 		utils.Error("Erreur lors de la lecture des messages", "error", err)
-		return c.Status(500).JSON(fiber.Map{"message": "Erreur lors de la récupération des messages."})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"message": "Erreur lors de la récupération des messages."})
 	}
 
-	// --- Traitement du tri et du curseur (la logique reste la même) ---
-
+	// --- Tri et Filtrage en mémoire ---
 	sort.Slice(allMessages, func(i, j int) bool {
 		return allMessages[i].Timestamp.After(allMessages[j].Timestamp)
 	})
 
+	var messagesToConsider []MessageResponse
 	if cursorStr != "" {
-		cursorUUID, _ := gocql.ParseUUID(cursorStr)
-		filteredMessages := make([]MessageResponse, 0)
-		for _, msg := range allMessages {
-			if msg.ID.Time().Before(cursorUUID.Time()) {
-				filteredMessages = append(filteredMessages, msg)
+		cursorUUID, err := gocql.ParseUUID(cursorStr)
+		if err == nil {
+			cursorTime := cursorUUID.Time()
+			for _, msg := range allMessages {
+				if msg.Timestamp.Before(cursorTime) {
+					messagesToConsider = append(messagesToConsider, msg)
+				}
 			}
+		} else {
+			messagesToConsider = allMessages
 		}
-		allMessages = filteredMessages
+	} else {
+		messagesToConsider = allMessages
 	}
 
+	// --- Détermination de la page finale et du prochain curseur ---
+	var finalMessages []MessageResponse
 	var nextCursor string
-	messages := allMessages
-	if len(allMessages) > limit {
-		messages = allMessages[:limit]
-		nextCursor = messages[len(messages)-1].ID.String()
+	if len(messagesToConsider) > limit {
+		finalMessages = messagesToConsider[:limit]
+		nextCursor = finalMessages[len(finalMessages)-1].ID.String()
+	} else {
+		finalMessages = messagesToConsider
 	}
 
-	// ✅ MODIFIÉ : La clé de la réponse est "data" pour correspondre au front-end.
 	return c.JSON(fiber.Map{
-		"data":        messages,
+		"data":        finalMessages,
 		"next_cursor": nextCursor,
 	})
 }
